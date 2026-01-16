@@ -19,8 +19,6 @@ public class PaymentEntity {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // For MVP: store orderId directly.
-    // Later you can map relationship @ManyToOne with OrderEntity.
     @Column(nullable = false)
     private Long orderId;
 
@@ -35,7 +33,10 @@ public class PaymentEntity {
     // Stripe: payment_intent id OR Razorpay: payment_id
     private String providerPaymentId;
 
-    // Razorpay: order_id OR Stripe: checkout session id
+    // Stripe checkout session id (cs_test_...)
+    private String providerSessionId;
+
+    // Razorpay: order_id
     private String providerOrderId;
 
     @Column(nullable = false, updatable = false)
