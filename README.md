@@ -109,7 +109,83 @@ This project is designed as a **portfolio-quality payment service** for Upwork c
 
 ## 1) Clone Project
 ```bash
-git clone https://github.com/<your-username>/payment-gateway-integration-java.git
+git clone https://github.com/manug18/payment-gateway-integration-java.git
 cd payment-gateway-integration-java/demo
+
+
+---
+
+## 2) Create PostgreSQL Database
+psql postgres
+CREATE DATABASE payment_db;
+\q
+3) Configure application.properties
+File path:
+demo/src/main/resources/application.properties
+# PostgreSQL
+spring.datasource.url=jdbc:postgresql://localhost:5432/payment_db
+spring.datasource.username=<your_pg_username>
+spring.datasource.password=<your_pg_password>
+spring.datasource.driver-class-name=org.postgresql.Driver
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+
+# Stripe
+stripe.secretKey=sk_test_xxxxxx
+stripe.webhookSecret=whsec_xxxxxx
+
+# Razorpay
+razorpay.keyId=rzp_test_xxxxxx
+razorpay.keySecret=xxxxxxxx
+razorpay.webhookSecret=your_custom_secret_here
+4) Run the Backend
+mvn spring-boot:run
+Backend runs on:
+http://localhost:8080
+🔌 API Endpoints
+Orders
+POST /api/orders → Create Order
+GET /api/orders/{id} → Get Order
+Stripe
+POST /api/payments/stripe/checkout → Create Checkout Session
+POST /api/webhooks/stripe → Stripe Webhook
+Razorpay
+POST /api/payments/razorpay/order → Create Razorpay Order
+POST /api/payments/razorpay/verify → Verify signature + mark PAID
+POST /api/webhooks/razorpay → Razorpay Webhook
+🧪 Webhook Testing
+Stripe (Local)
+Login:
+stripe login
+Forward webhooks to localhost:
+stripe listen --forward-to localhost:8080/api/webhooks/stripe
+Copy the CLI secret (whsec_...) into:
+stripe.webhookSecret=whsec_...
+Trigger test event:
+stripe trigger checkout.session.completed
+Razorpay (Local)
+Expose local server:
+ngrok http 8080
+Use webhook URL:
+https://<ngrok-id>.ngrok-free.app/api/webhooks/razorpay
+Create webhook in Razorpay Dashboard:
+Settings → Webhooks → Add New Webhook
+Secret: choose any value and set same in application.properties.
+✅ Verify in Database
+select * from orders;
+select * from payments;
+select * from webhook_events order by id desc;
+Expected:
+payments.status = PAID on success
+orders.status = PAID
+webhook events stored in webhook_events
+📌 Future Enhancements
+Docker + docker-compose
+Flyway DB migrations
+Refund API support
+Scheduled payment reconciliation
+Kafka events: payment.success, payment.failed**
+
+
 
 
