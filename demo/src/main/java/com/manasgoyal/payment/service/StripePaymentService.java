@@ -275,12 +275,4 @@ public class StripePaymentService {
             throw new RuntimeException("Failed to parse Stripe webhook payload", e);
         }
     }
-
-    private void handlePaymentFailed(Event event) {
-        // In Stripe, the failed event might not include checkout session directly.
-        // We'll not implement deep mapping now to keep it simple.
-        // For a portfolio project, "checkout.session.completed" is enough for marking success.
-
-        // You can enhance later by processing PaymentIntent object.
-    }
 }
