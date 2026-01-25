@@ -1,0 +1,45 @@
+<html>
+<head>
+    <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</head>
+<body>
+<button onclick="pay()">Pay with Razorpay</button>
+
+<script>
+    async function pay() {
+      const resp = await fetch("http://localhost:8080/api/payments/razorpay/order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId: "1625c999-b730-49f6-88a3-4b8519b647a3" })
+      });
+      const data = await resp.json();
+
+      const options = {
+        key: data.razorpayKeyId,
+        amount: data.amount,
+        currency: data.currency,
+        name: "Payment Demo",
+        order_id: data.razorpayOrderId,
+        handler: async function (response) {
+          // send response to backend verify API
+          const verifyResp = await fetch("http://localhost:8080/api/payments/razorpay/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              orderId: "1625c999-b730-49f6-88a3-4b8519b647a3",
+              razorpayOrderId: response.razorpay_order_id,
+              razorpayPaymentId: response.razorpay_payment_id,
+              razorpaySignature: response.razorpay_signature
+            })
+          });
+
+          alert(await verifyResp.text());
+        }
+      };
+
+      const rzp = new Razorpay(options);
+      rzp.open();
+    }
+</script>
+</body>
+</html>

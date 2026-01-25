@@ -6,6 +6,7 @@ import jakarta.persistence.*;
 import lombok.*;
 
 import java.time.Instant;
+import java.util.UUID;
 
 @Entity
 @Table(name = "payments")
@@ -20,7 +21,7 @@ public class PaymentEntity {
     private Long id;
 
     @Column(nullable = false)
-    private Long orderId;
+    private UUID orderId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
