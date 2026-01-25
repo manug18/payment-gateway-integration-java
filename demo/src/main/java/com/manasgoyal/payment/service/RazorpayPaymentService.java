@@ -2,17 +2,16 @@ package com.manasgoyal.payment.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.manasgoyal.payment.client.OrderClient;
 import com.manasgoyal.payment.dto.CreateRazorpayOrderResponse;
 import com.manasgoyal.payment.dto.RazorpayVerifyPaymentRequest;
-import com.manasgoyal.payment.entity.OrderEntity;
 import com.manasgoyal.payment.entity.PaymentEntity;
 import com.manasgoyal.payment.entity.WebhookEventEntity;
-import com.manasgoyal.payment.entity.enums.OrderStatus;
 import com.manasgoyal.payment.entity.enums.PaymentProvider;
 import com.manasgoyal.payment.entity.enums.PaymentStatus;
-import com.manasgoyal.payment.repository.OrderRepository;
 import com.manasgoyal.payment.repository.PaymentRepository;
 import com.manasgoyal.payment.repository.WebhookEventRepository;
+import com.manasgoyal.payment.dto.PaymentStatusUpdateRequest;
 import com.razorpay.Order;
 import com.razorpay.RazorpayClient;
 import lombok.RequiredArgsConstructor;
@@ -25,15 +24,16 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.HexFormat;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class RazorpayPaymentService {
 
     private final RazorpayClient razorpayClient;
-    private final OrderRepository orderRepository;
     private final PaymentRepository paymentRepository;
     private final WebhookEventRepository webhookEventRepository;
+    private final OrderClient orderClient; // ⭐ talk to order-service
 
     @Value("${razorpay.keyId}")
     private String keyId;
@@ -43,52 +43,52 @@ public class RazorpayPaymentService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public CreateRazorpayOrderResponse createRazorpayOrder(Long orderId) throws Exception {
+    /**
+     * Called by order-service to create payment at Razorpay
+     */
+    public CreateRazorpayOrderResponse createRazorpayOrder(UUID orderId) throws Exception {
 
-        OrderEntity orderEntity = orderRepository.findById(orderId)
-                .orElseThrow(() -> new RuntimeException("Order not found: " + orderId));
+        // 1️⃣ Fetch order from Order Service
+        var order = orderClient.getOrder(orderId);
 
-        long amountInPaise = orderEntity.getAmount()
-                .multiply(java.math.BigDecimal.valueOf(100))
-                .longValue();
+        long amountInPaise = order.totalAmount(); // already in paise from order-service
+        String currency = order.currency();
 
+        // 2️⃣ Create Razorpay order
         JSONObject request = new JSONObject();
         request.put("amount", amountInPaise);
-        request.put("currency", orderEntity.getCurrency());
-        request.put("receipt", "order_rcpt_" + orderId);
+        request.put("currency", currency);
+        request.put("receipt", "ord_" + orderId.toString().replace("-", "").substring(0, 30));
         request.put("payment_capture", 1);
 
         Order rzOrder = razorpayClient.orders.create(request);
 
-        // Create payment row in DB
-        PaymentEntity payment = paymentRepository.findByOrderId(orderId)
-                .orElseGet(() -> paymentRepository.save(
-                        PaymentEntity.builder()
-                                .orderId(orderId)
-                                .provider(PaymentProvider.RAZORPAY)
-                                .status(PaymentStatus.PENDING)
-                                .build()
-                ));
+        // 3️⃣ Save payment record
+        PaymentEntity payment = paymentRepository.save(
+                PaymentEntity.builder()
+                        .orderId(orderId)
+                        .provider(PaymentProvider.RAZORPAY)
+                        .providerOrderId(rzOrder.get("id"))
+                        .status(PaymentStatus.PENDING)
+                        .build()
+        );
 
-        payment.setProviderOrderId(rzOrder.get("id")); // order_...
-        paymentRepository.save(payment);
-
+        // 4️⃣ Send data to frontend
         return new CreateRazorpayOrderResponse(
                 keyId,
                 rzOrder.get("id"),
                 amountInPaise,
-                orderEntity.getCurrency()
+                currency
         );
     }
 
+
     /**
-     * Verify signature from frontend (Razorpay checkout response).
+     * Frontend signature verification
      */
     @Transactional
     public void verifyPayment(RazorpayVerifyPaymentRequest req) {
 
-        // signature string format:
-        // order_id|payment_id
         String data = req.razorpayOrderId() + "|" + req.razorpayPaymentId();
         String generatedSignature = hmacSha256Hex(data, keySecret);
 
@@ -96,30 +96,28 @@ public class RazorpayPaymentService {
             throw new RuntimeException("Invalid Razorpay signature");
         }
 
-        // Find payment by razorpay order_id
         PaymentEntity payment = paymentRepository.findByOrderId(req.orderId())
-                .orElseThrow(() -> new RuntimeException("Payment not found for orderId: " + req.orderId()));
+                .orElseThrow(() -> new RuntimeException("Payment not found"));
 
-        payment.setProviderOrderId(req.razorpayOrderId());
         payment.setProviderPaymentId(req.razorpayPaymentId());
         payment.setStatus(PaymentStatus.PAID);
         paymentRepository.save(payment);
 
-        OrderEntity order = orderRepository.findById(req.orderId())
-                .orElseThrow(() -> new RuntimeException("Order not found: " + req.orderId()));
-
-        order.setStatus(OrderStatus.PAID);
-        orderRepository.save(order);
+        // 🔥 Notify order-service
+        orderClient.updatePaymentStatus(
+                req.orderId(),
+                new PaymentStatusUpdateRequest(PaymentStatus.PAID, req.razorpayPaymentId())
+        );
     }
 
     /**
-     * Handle webhook (optional but portfolio-strong).
+     * Webhook handler (gateway → payment-service)
      */
     @Transactional
     public void handleWebhook(String rawPayload, String webhookEventId) {
-        // idempotency check (use eventId)
+
         if (webhookEventRepository.existsByProviderAndEventId(PaymentProvider.RAZORPAY, webhookEventId)) {
-            return;
+            return; // idempotent
         }
 
         webhookEventRepository.save(
@@ -132,13 +130,13 @@ public class RazorpayPaymentService {
 
         try {
             JsonNode root = objectMapper.readTree(rawPayload);
-
             String event = root.path("event").asText();
-            JsonNode payload = root.path("payload");
 
             if ("payment.captured".equals(event)) {
-                String razorpayPaymentId = payload.path("payment").path("entity").path("id").asText();
-                String razorpayOrderId = payload.path("payment").path("entity").path("order_id").asText();
+                JsonNode entity = root.path("payload").path("payment").path("entity");
+
+                String razorpayPaymentId = entity.path("id").asText();
+                String razorpayOrderId = entity.path("order_id").asText();
 
                 PaymentEntity payment = paymentRepository.findAll().stream()
                         .filter(p -> razorpayOrderId.equals(p.getProviderOrderId()))
@@ -150,20 +148,18 @@ public class RazorpayPaymentService {
                     payment.setStatus(PaymentStatus.PAID);
                     paymentRepository.save(payment);
 
-                    OrderEntity order = orderRepository.findById(payment.getOrderId()).orElse(null);
-                    if (order != null) {
-                        order.setStatus(OrderStatus.PAID);
-                        orderRepository.save(order);
-                    }
+                    // 🔥 Notify order-service
+                    orderClient.updatePaymentStatus(
+                            payment.getOrderId(),
+                            new PaymentStatusUpdateRequest(PaymentStatus.PAID, razorpayPaymentId)
+                    );
                 }
             }
 
         } catch (Exception e) {
-            throw new RuntimeException("Failed to process Razorpay webhook payload", e);
+            throw new RuntimeException("Webhook processing failed", e);
         }
     }
-
-    // --- helpers ---
 
     private String hmacSha256Hex(String data, String secret) {
         try {
@@ -173,7 +169,7 @@ public class RazorpayPaymentService {
             byte[] hash = sha256Hmac.doFinal(data.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
-            throw new RuntimeException("Failed to compute HMAC SHA256", e);
+            throw new RuntimeException("HMAC error", e);
         }
     }
 }
